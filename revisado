@@ -1,0 +1,159 @@
+package revisado;
+
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Versão revisada e refatorada da classe EstoqueArquivo.
+ * 
+ * Principais melhorias implementadas:
+ * 1. Gerenciamento automático de recursos com try-with-resources (evita vazamento de memória/arquivos).
+ * 2. Garantia de persistência em disco (flush/close automático no BufferedWriter).
+ * 3. Validação defensiva dos parâmetros de entrada (código nulo/vazio e quantidades inválidas).
+ * 4. Propagação explícita de falhas de I/O em vez de blocos catch vazios.
+ * 5. Correção da regra de negócio: o saldo agora é realmente descontado do estoque.csv.
+ * 6. Injeção dos caminhos dos arquivos via construtor para permitir testes unitários isolados.
+ */
+public class EstoqueArquivo {
+
+    private final String caminhoEstoque;
+    private final String caminhoMovimentacoes;
+    private String ultimaMovimentacao = "";
+
+    /**
+     * Construtor padrão que mantém compatibilidade com os nomes de arquivos originais.
+     */
+    public EstoqueArquivo() {
+        this("estoque.csv", "movimentacoes.txt");
+    }
+
+    /**
+     * Construtor parametrizado para facilitar testes automatizados e reutilização.
+     *
+     * @param caminhoEstoque       Caminho do arquivo CSV de estoque.
+     * @param caminhoMovimentacoes Caminho do arquivo TXT de log de movimentações.
+     */
+    public EstoqueArquivo(String caminhoEstoque, String caminhoMovimentacoes) {
+        if (caminhoEstoque == null || caminhoEstoque.isBlank() ||
+            caminhoMovimentacoes == null || caminhoMovimentacoes.isBlank()) {
+            throw new IllegalArgumentException("Os caminhos dos arquivos não podem ser nulos ou vazios.");
+        }
+        this.caminhoEstoque = caminhoEstoque;
+        this.caminhoMovimentacoes = caminhoMovimentacoes;
+    }
+
+    /**
+     * Consulta a quantidade disponível de um produto no arquivo de estoque.
+     *
+     * @param codigo Código identificador do produto.
+     * @return Quantidade disponível em estoque (0 se não encontrado).
+     * @throws IOException Caso ocorra erro de leitura ou formato inválido no arquivo.
+     */
+    public int consultarQuantidade(String codigo) throws IOException {
+        validarCodigo(codigo);
+        String codigoBusca = codigo.trim();
+        int quantidade = 0;
+
+        // Uso de try-with-resources garante o fechamento automático do BufferedReader
+        try (BufferedReader leitor = new BufferedReader(new FileReader(caminhoEstoque))) {
+            String linha;
+            while ((linha = leitor.readLine()) != null) {
+                if (linha.isBlank()) {
+                    continue; // Ignora linhas vazias sem quebrar a execução
+                }
+
+                String[] colunas = linha.split(";");
+                if (colunas.length >= 2 && colunas[0].trim().equals(codigoBusca)) {
+                    try {
+                        quantidade = Integer.parseInt(colunas[1].trim());
+                    } catch (NumberFormatException e) {
+                        throw new IOException("Valor numérico corrompido no estoque para o código: " + codigoBusca, e);
+                    }
+                    break;
+                }
+            }
+        }
+        return quantidade;
+    }
+
+    /**
+     * Registra a saída de um produto, atualizando o saldo no CSV e gravando o histórico no TXT.
+     *
+     * @param codigo     Código identificador do produto.
+     * @param quantidade Quantidade a ser retirada (deve ser maior que zero).
+     * @return true se a saída foi registrada com sucesso; false se o estoque for insuficiente.
+     * @throws IOException Caso ocorra falha ao ler ou gravar nos arquivos.
+     */
+    public boolean registrarSaida(String codigo, int quantidade) throws IOException {
+        validarCodigo(codigo);
+        if (quantidade <= 0) {
+            throw new IllegalArgumentException("A quantidade de saída deve ser maior que zero.");
+        }
+
+        String codigoLimpo = codigo.trim();
+        int disponivel = consultarQuantidade(codigoLimpo);
+
+        if (quantidade > disponivel) {
+            return false;
+        }
+
+        // 1. Atualiza o saldo real no arquivo estoque.csv
+        atualizarSaldoEstoque(codigoLimpo, disponivel - quantidade);
+
+        // 2. Registra a movimentação com fechamento automático (garante gravação no disco)
+        try (BufferedWriter escrita = new BufferedWriter(new FileWriter(caminhoMovimentacoes, true))) {
+            escrita.write(codigoLimpo + ";" + quantidade);
+            escrita.newLine();
+        }
+
+        ultimaMovimentacao = codigoLimpo;
+        return true;
+    }
+
+    /**
+     * Método auxiliar privado para reescrever o arquivo de estoque com o saldo atualizado.
+     */
+    private void atualizarSaldoEstoque(String codigo, int novoSaldo) throws IOException {
+        List<String> linhasAtualizadas = new ArrayList<>();
+
+        try (BufferedReader leitor = new BufferedReader(new FileReader(caminhoEstoque))) {
+            String linha;
+            while ((linha = leitor.readLine()) != null) {
+                if (linha.isBlank()) {
+                    continue;
+                }
+                String[] colunas = linha.split(";");
+                if (colunas.length >= 2 && colunas[0].trim().equals(codigo)) {
+                    linhasAtualizadas.add(codigo + ";" + novoSaldo);
+                } else {
+                    linhasAtualizadas.add(linha);
+                }
+            }
+        }
+
+        try (BufferedWriter escritor = new BufferedWriter(new FileWriter(caminhoEstoque, false))) {
+            for (String linha : linhasAtualizadas) {
+                escritor.write(linha);
+                escritor.newLine();
+            }
+        }
+    }
+
+    /**
+     * Valida se o código do produto foi informado corretamente.
+     */
+    private void validarCodigo(String codigo) {
+        if (codigo == null || codigo.isBlank()) {
+            throw new IllegalArgumentException("O código do produto não pode ser nulo ou vazio.");
+        }
+    }
+
+    public String getUltimaMovimentacao() {
+        return ultimaMovimentacao;
+    }
+}
